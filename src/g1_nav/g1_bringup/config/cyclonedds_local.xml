@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Keep ROS 2 DDS traffic on loopback.
+
+  WHY: every ROS node in this project runs on this PC. Only the two SDK
+  binaries talk to the robot, and they do it over Unitree DDS on eno1. Left to
+  itself CycloneDDS also tries to use eno1 for ROS traffic, which produces
+
+      ddsi_udp_conn_write to udp/192.168.123.1:7410 failed with retcode -1
+
+  several times a second. It buries real log lines, and it makes the ros2 CLI
+  (`ros2 node list`, `ros2 topic hz`, `ros2 lifecycle set`) hang outright --
+  which looks like a broken install or a wedged node and is neither.
+
+  SAFE FOR THE SDK: unitree_sdk2 passes its own inline XML to
+  dds_create_domain, and a programmatic config beats the environment variable.
+  So g1_state_server and g1_loco_server keep using eno1 and are unaffected.
+  Verify after any change with:  ldd / the server's own "Subscribed to" lines.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo" priority="default" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+  </Domain>
+</CycloneDDS>

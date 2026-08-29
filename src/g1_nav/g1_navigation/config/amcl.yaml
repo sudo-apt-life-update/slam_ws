@@ -1,0 +1,134 @@
+# AMCL for the G1: localise a 69.8-degree depth-camera scan against a prior map.
+#
+# THE SITUATION THESE VALUES ARE TUNED FOR
+#
+# AMCL was designed around a 270-degree LiDAR. We have a forward-facing wedge
+# barely a quarter that wide, which cuts hard both ways:
+#
+#   WORSE  one scan constrains only what is in front. Facing along a corridor,
+#          position ALONG the corridor is weakly observed. Global localisation
+#          from scratch is impractical -- expect to give an initial pose.
+#
+#   BETTER the motion model is unusually good. Odometry comes from the robot's
+#          own leg+IMU estimator, validated against a tape measure (1.37 m
+#          forward, 0.52 m right over one 7.5 s walk). AMCL normally has to
+#          fight bad wheel odometry; here the scan only has to correct slow
+#          drift, which is a far easier job.
+#
+# So: trust odometry, treat the scan as a gentle correction, and carry enough
+# particles to keep more than one hypothesis alive.
+
+amcl:
+  ros__parameters:
+    # --- frames -------------------------------------------------------------
+    # base_stabilized, NOT base_footprint. The scan is expressed in the level
+    # frame (see g1_perception/config/scan.yaml), and AMCL's base_frame_id must
+    # be the frame the scan actually lives in or every range is interpreted
+    # against a tilted axis.
+    base_frame_id: "base_stabilized"
+    odom_frame_id: "odom"
+    global_frame_id: "map"
+    scan_topic: "scan"
+    map_topic: "map"
+    tf_broadcast: true
+    # The scan is stamped at capture and travels through odom -> base_stabilized.
+    # 1.0 s is generous; it costs nothing and avoids dropping scans during the
+    # startup transient when TF is still filling.
+    transform_tolerance: 1.0
+
+    # --- motion model -------------------------------------------------------
+    # Omni, not differential. The G1 side-steps under command, and it also
+    # drifts sideways when told to walk straight -- the validation run showed
+    # 0.52 m of rightward drift over 1.37 m of forward travel. A differential
+    # model has no term for that and would keep being surprised by it.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+
+    # Odometry noise. Lower than stock, because this odometry is genuinely
+    # good; inflating it would spread particles the scan then cannot re-tighten
+    # with only 70 degrees of view.
+    #   alpha1 rotation noise from rotation      alpha2 rotation from translation
+    #   alpha3 translation from translation      alpha4 translation from rotation
+    #   alpha5 sideways translation (omni only)
+    alpha1: 0.15
+    alpha2: 0.15
+    alpha3: 0.15
+    alpha4: 0.15
+    # Deliberately larger: the measured sideways drift is the least predictable
+    # part of how this robot walks.
+    alpha5: 0.20
+
+    # --- particles ----------------------------------------------------------
+    # More than the 500/2000 default. A narrow FOV means each scan rules out
+    # less, so hypotheses have to survive longer before one wins.
+    min_particles: 800
+    max_particles: 3000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+
+    # --- sensor model -------------------------------------------------------
+    # likelihood_field, not beam. The beam model reasons about what each ray
+    # passes through, which needs a wide sweep to be informative and is far
+    # more sensitive to unmodelled obstacles -- and our map is a survey scan of
+    # a room whose furniture has since moved.
+    laser_model_type: "likelihood_field"
+
+    # Must match the scan, which is built to match the D435's usable depth.
+    laser_min_range: 0.30
+    laser_max_range: 6.0
+
+    # The scan has 140 rays; 60 subsampled is plenty and keeps the update cheap
+    # enough to run every step.
+    max_beams: 60
+
+    # z_hit + z_rand dominate for likelihood_field. Weighted toward z_hit
+    # because depth returns that exist are accurate; the map is the less
+    # trustworthy half of the comparison.
+    z_hit: 0.6
+    z_rand: 0.4
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    # Expected match error, metres. 0.2 accommodates the map's 0.05 m cells
+    # plus the few-centimetre extrinsic error measured in the camera chain.
+    sigma_hit: 0.2
+    laser_likelihood_max_dist: 2.0
+
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_threshold: 0.3
+    beam_skip_error_threshold: 0.9
+
+    # --- update policy ------------------------------------------------------
+    # How far the robot must move before a filter update. Tighter than the
+    # 0.25 m / 0.2 rad default: this robot walks slowly and turning is where a
+    # narrow FOV gains the most information, so updating sooner is worth the
+    # CPU.
+    update_min_d: 0.15
+    update_min_a: 0.15
+
+    # --- recovery -----------------------------------------------------------
+    # Random-particle injection when the filter is doing badly. ENABLED but
+    # conservative. A 70-degree view legitimately scores poorly at times --
+    # facing open space, for instance -- and aggressive injection would then
+    # scatter a perfectly good estimate. These values react to a sustained
+    # collapse, not a momentary one.
+    recovery_alpha_slow: 0.001
+    recovery_alpha_fast: 0.1
+
+    # --- initial pose -------------------------------------------------------
+    # Left false: with this FOV, global localisation from scratch does not
+    # converge reliably, so the pose comes from RViz's "2D Pose Estimate" or a
+    # /initialpose message. Set true and fill in initial_pose below if the
+    # robot always starts from the same known spot.
+    set_initial_pose: false
+    always_reset_initial_pose: false
+    # initial_pose:
+    #   x: 0.0
+    #   y: 0.0
+    #   z: 0.0
+    #   yaw: 0.0
+
+    first_map_only: false
+    save_pose_rate: 0.5
+    freespace_downsampling: false

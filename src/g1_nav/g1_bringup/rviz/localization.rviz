@@ -1,0 +1,196 @@
+# RViz layout for giving AMCL its initial pose and watching it converge.
+#
+# THREE THINGS THAT SILENTLY SHOW NOTHING IF YOU GET THEM WRONG
+#
+#  1. Fixed Frame must be `map`. Anything else and the robot will appear to
+#     sit still while the map slides around it.
+#  2. The Map display needs Durability = TRANSIENT LOCAL. map_server latches
+#     one message and never repeats it; a Volatile subscriber joins after that
+#     message and waits forever, showing an empty grid with no warning.
+#  3. The LaserScan display needs Reliability = BEST EFFORT. /scan is
+#     published best-effort, and a Reliable subscriber receives nothing from
+#     it -- again with no error, only a QoS warning buried in the console.
+#
+# Every display below is already set correctly. They are listed because these
+# are the settings to check first when something is missing.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /LaserScan1
+        - /ParticleCloud1
+      Splitter Ratio: 0.5
+    Tree Height: 720
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Enabled: true
+      Topic:
+        Value: /map
+        Depth: 1
+        # map_server latches. Volatile shows an empty grid, silently.
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+      Update Topic:
+        Value: /map_updates
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Enabled: true
+      Topic:
+        Value: /scan
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        # /scan is best-effort. A Reliable subscriber gets nothing.
+        Reliability Policy: Best Effort
+      # Flat squares at 5 cm read clearly against the map's 5 cm cells.
+      Style: Squares
+      Size (m): 0.05
+      # One solid colour: the point of this display is whether the scan lies
+      # ON the map's walls, and a rainbow makes that harder to judge.
+      Color: 255; 30; 30
+      Color Transformer: FlatColor
+      # Hold two seconds of scans. A single frame is sparse with a 70 degree
+      # FOV; the accumulation is what makes a wall obvious.
+      Decay Time: 2
+      Position Transformer: XYZ
+      Value: true
+    - Class: nav2_rviz_plugins/ParticleCloud
+      Name: ParticleCloud
+      Enabled: true
+      Topic:
+        Value: /particle_cloud
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+      Color: 0; 180; 255
+      # The spread of these arrows IS the localisation quality. Tight cluster
+      # = converged. Spread out or multi-lobed = AMCL is unsure, which a
+      # 70 degree FOV makes more likely than usual.
+      Shape: Arrow (Flat)
+      Alpha: 0.6
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Alpha: 0.9
+      Visual Enabled: true
+      Collision Enabled: false
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+      Marker Scale: 0.4
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Update Interval: 0
+      # Off by default -- 47 frames is unreadable. Enable and pick these when
+      # you need to see whether map -> odom exists at all.
+      Frames:
+        All Enabled: false
+        map:
+          Value: true
+        odom:
+          Value: true
+        base_stabilized:
+          Value: true
+        base_footprint:
+          Value: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DepthCloud
+      # Off by default: 100k points at 30 Hz on top of everything else is
+      # heavy, and the scan is what AMCL actually consumes. Turn it on to
+      # sanity-check what the scan was derived from.
+      Enabled: false
+      Topic:
+        Value: /camera/cloud
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: RGB8
+      Decay Time: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    # Must be map, or AMCL's corrections are invisible.
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    # THE TOOL YOU ARE HERE FOR. Publishes /initialpose, which AMCL takes as
+    # its starting hypothesis.
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      # Tell AMCL how much to trust the click. 0.25 m and 0.2 rad says
+      # "roughly here, facing roughly this way", which is about as well as
+      # anyone can point at a map by hand.
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.2
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      # Top-down orthographic: this is a 2D localisation problem, and a
+      # perspective view makes it much harder to judge whether the scan lines
+      # up with a wall.
+      Scale: 40
+      X: 0
+      Y: 0
+      Angle: 0
+      Target Frame: map
+    Saved: ~
+Window Geometry:
+  Height: 1000
+  Width: 1700
+  Displays:
+    collapsed: false
+  Views:
+    collapsed: false
+  Tool Properties:
+    collapsed: false

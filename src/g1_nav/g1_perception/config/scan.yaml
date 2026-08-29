@@ -1,0 +1,97 @@
+# Depth cloud -> LaserScan, for AMCL.
+#
+# WHY A HEIGHT FILTER AND NOT depthimage_to_laserscan
+#
+# depthimage_to_laserscan flattens a horizontal BAND OF IMAGE ROWS. That is
+# correct for a level camera and wrong for this one: the D435i is pitched
+# 19.16 deg down, so the row through the image centre points at the floor
+# about 3.6 m ahead. The "scan" would be a near-constant ring of floor
+# readings, and AMCL would fail in a way that looks like a tuning problem.
+#
+# pointcloud_to_laserscan filters by height in a chosen FRAME instead, so what
+# ends up in the scan is decided by where a point is in the world, not where it
+# landed on the sensor.
+#
+# WHY target_frame IS base_stabilized
+#
+# The filter needs a frame whose z points at the sky. base_footprint does not:
+# it carries the robot's full attitude, and the G1 stands with a 7.5 deg lean
+# and pitches every step. base_stabilized is the same position with roll and
+# pitch removed -- see g1_locomotion/base_stabilizer.py.
+#
+# Ranges are then horizontal distances from the robot, and heights are true
+# heights above the floor.
+
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: base_stabilized
+
+    # THE BAND. Chosen against two independent constraints:
+    #
+    #  - The MAP. make_dense_occupancy_v2.py marks a cell occupied from points
+    #    0.12-2.20 m above the floor, and treats -0.04-0.10 m as floor. A scan
+    #    below ~0.12 m would report obstacles the map calls free.
+    #  - The CAMERA. At 1.26 m high and pitched 19.16 deg down with a 43.1 deg
+    #    vertical FOV, the top of the frame is 2.4 deg ABOVE horizontal, so the
+    #    visible band at 4 m is roughly floor to 1.43 m. Nothing above that is
+    #    observable at any useful range.
+    #
+    # 0.30 leaves 0.20 m of margin over the map's floor band, for odometry z
+    # drift and uneven ground. 1.50 is past what the camera can see, which
+    # costs nothing and leaves headroom if the bracket is ever raised.
+    #
+    # Anything the map contains between 0.12-0.30 m or above 1.5 m is simply
+    # not reported. AMCL tolerates missing returns far better than spurious
+    # ones, which is the right way round for us.
+    min_height: 0.30
+    max_height: 1.50
+
+    # The camera's horizontal FOV is 69.8 deg (fx=607.3 at 848 px). Claiming
+    # any more would fill the scan with fabricated "no return" readings, and
+    # AMCL treats a max-range reading as evidence of empty space.
+    angle_min: -0.6109      # -35 deg
+    angle_max:  0.6109      # +35 deg
+    # ~0.5 deg, giving 141 rays. The depth image supplies far more columns than
+    # this; a finer scan would cost CPU without adding information AMCL can use.
+    #
+    # THE EXACT VALUE MATTERS -- do not "tidy" it to 0.00873.
+    #
+    # pointcloud_to_laserscan and Karto (inside slam_toolbox) count rays
+    # differently:
+    #
+    #     pointcloud_to_laserscan:  ceil((max - min) / increment)
+    #     Karto:                    round((max - min) / increment) + 1
+    #
+    # At 0.00873 that is ceil(139.954)=140 against round(139.954)+1=141, and
+    # slam_toolbox rejects EVERY scan with
+    #
+    #     LaserRangeScan contains 140 range readings, expected 141
+    #
+    # It still publishes map -> odom while doing so, so the stack looks alive
+    # and simply never builds a map. A whole walk was lost to this.
+    #
+    # The two agree whenever the fractional part of (max-min)/increment is
+    # below 0.5. At 0.00870 it is 140.4368: ceil = 141, round + 1 = 141.
+    # Re-check with a one-liner if angle_min/max ever change.
+    angle_increment: 0.00870
+
+    scan_time: 0.0333       # 30 Hz, matching the camera
+
+    # D435 depth is trustworthy to a few metres and degrades quadratically
+    # beyond that. 6 m matches the cloud's own max_depth.
+    range_min: 0.30
+    range_max: 6.0
+
+    # Report unmeasured directions as +inf rather than range_max. AMCL reads
+    # max-range as "empty all the way out there", which is a much stronger
+    # claim than "I saw nothing here".
+    use_inf: true
+    inf_epsilon: 1.0
+
+    # The cloud is stamped at capture and has to be transformed through
+    # odom -> base_stabilized. 0.1 s absorbs the bridge latency (~22 ms) and
+    # normal TF jitter without silently dropping frames.
+    transform_tolerance: 0.1
+
+    # 0 = use all available cores.
+    concurrency_level: 0

@@ -1,0 +1,307 @@
+# Nav2 for the G1: costmaps, planner, controller -- on top of RTAB-Map
+# localisation, not AMCL. See INSTRUCTIONS.md section 11b for why.
+#
+# FRAMES
+#
+# robot_base_frame is base_footprint everywhere here, matching odom_bridge
+# (g1_bringup/launch/rtabmap_localization.launch.py) and every other frame
+# choice in this project -- NOT base_link, which nav2_bringup's own default
+# params file assumes. base_stabilized (the level frame) is for perception
+# only; the controller commands the robot's actual, tilting body frame.
+#
+# OBSTACLE SOURCE
+#
+# Both costmaps read the same /scan already built and validated for AMCL
+# (g1_perception/config/scan.yaml): height-filtered 0.30-1.50 m, 141 rays
+# across the camera's real 69.8 deg FOV. Reusing it rather than adding a
+# second, un-tuned obstacle source.
+#
+# FOOTPRINT
+#
+# Circular, radius 0.35 m -- a conservative placeholder from the G1's
+# approximate shoulder width, NOT a measured value. Refine before trusting
+# the robot in a tight corridor: measure actual width and consider whether a
+# polygon footprint is worth the extra complexity for a body that is not
+# circularly symmetric (arms, backpack).
+#
+# VELOCITY LIMITS
+#
+# Conservative placeholders (0.3 m/s translation, 0.5 rad/s rotation) pending
+# real-world tuning. loco_bridge accepts vx/vy/wz (omnidirectional -- AMCL's
+# OmniMotionModel was chosen because the G1 genuinely side-steps), but the
+# controller below (RPP) only commands vx/wz. See the controller note.
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5   # effectively disables the Y check --
+                                     # RPP does not command Y, see below
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.3
+      # 15.0 -> 20.0. SimpleProgressChecker only counts LINEAR movement, not
+      # rotation. A large heading correction at the now-corrected 0.5 rad/s
+      # (see rotate_to_heading_angular_vel above) can legitimately spend
+      # several seconds turning before any translation registers at all --
+      # 15 s left too little margin for the translation phase afterward.
+      movement_time_allowance: 20.0
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 0.15
+      stateful: true
+
+    # Regulated Pure Pursuit, not the default DWB. RPP needs far less tuning
+    # to get a first working controller and is well-behaved at the slow
+    # speeds this robot walks at.
+    #
+    # NOTE -- LEAVES CAPABILITY ON THE TABLE. RPP is a differential-style
+    # controller: it commands forward speed and yaw rate, nothing sideways.
+    # The G1 can genuinely strafe (AMCL's OmniMotionModel exists because of
+    # measured sideways drift under a "walk straight" command), so RPP is
+    # using less of the robot than the hardware allows. nav2_mppi_controller
+    # supports a configurable holonomic motion model and could exploit that,
+    # at the cost of substantially more tuning. Revisit once basic navigation
+    # is validated -- get a robot that reaches the goal before optimising how
+    # gracefully it gets there.
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.25
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_fixed_curvature_lookahead: false
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.08
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      # RPP's own default here is 1.8 rad/s, but velocity_smoother caps wz at
+      # 0.5 rad/s below. Left mismatched, RPP commands 1.8 and the smoother
+      # silently throttles it to 0.5 -- a >3x slowdown RPP has no idea about.
+      # MEASURED 2026-08-25: exactly this mismatch produced a real stuck
+      # navigation attempt -- yaw swung ~180 deg while the SimpleProgressChecker
+      # (0.3 m / 15 s, linear-only, does not count rotation) timed out
+      # repeatedly, ~15-20 s apart, because the actual achieved turn rate was
+      # a third of what RPP expected. Match the smoother's real cap instead of
+      # RPP's wheeled-robot default.
+      rotate_to_heading_angular_vel: 0.5
+      max_angular_accel: 1.5
+      max_robot_pose_search_dist: 5.0
+      use_interpolation: true
+      allow_reversing: false
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      # 4x4 m. The scan's own max_range is 6 m, but returns beyond ~3 m carry
+      # the far-field noise noted throughout this project (~350 mm jitter in
+      # open space); a smaller, closer-in local window trusts only the range
+      # the scan is actually reliable at.
+      width: 4
+      height: 4
+      resolution: 0.05
+      footprint: "[[0.35, 0.25], [0.35, -0.25], [-0.35, -0.25], [-0.35, 0.25]]"
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          # BEST_EFFORT to match the scan's own publisher QoS (see
+          # scan.yaml / g1_perception). A RELIABLE subscriber here would
+          # silently receive nothing, same failure mode documented for
+          # RTAB-Map's tag_detections collision.
+          sensor_frame: base_stabilized
+          data_type: "LaserScan"
+          expected_update_rate: 0.5
+          observation_persistence: 0.0
+          marking: true
+          clearing: true
+          max_obstacle_height: 2.0
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # 0.40 m: footprint half-width (0.25 m diagonal-ish) plus margin.
+        # cost_scaling_factor higher than stock (3.0 -> 4.0) so the inflated
+        # cost falls off faster -- with a 4x4 m local window there is not
+        # much room to spare on a slowly-decaying gradient.
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.40
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      resolution: 0.05
+      footprint: "[[0.35, 0.25], [0.35, -0.25], [-0.35, -0.25], [-0.35, 0.25]]"
+      # Static layer FIRST, from RTAB-Map's own /map -- the same corrected,
+      # tag-verified grid used throughout section 11/11b, not a separate
+      # survey. Obstacle layer on top catches anything that has moved (or
+      # was never in the map's field of view) since that grid was built.
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+        subscribe_to_updates: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: base_stabilized
+          data_type: "LaserScan"
+          expected_update_rate: 0.5
+          observation_persistence: 0.0
+          marking: true
+          clearing: true
+          max_obstacle_height: 2.0
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.40
+      always_send_full_costmap: true
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      # A*, matching what INSTRUCTIONS.md has said from the start ("A*/Dijkstra
+      # is nav2_navfn_planner config, not an implementation task"). Set false
+      # for Dijkstra if A*'s greedy heuristic ever produces a visibly worse
+      # path than the map's geometry should allow.
+      use_astar: true
+      tolerance: 0.5
+      allow_unknown: true
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.5
+    # Slower than stock -- this is a walking humanoid, not a wheeled base;
+    # give recovery behaviours the same conservative speed as everything
+    # else here until real-world speeds are validated.
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.5
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 0
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 2.0
+    # One polygon, "approach": slows the robot as the footprint nears a
+    # predicted collision rather than a hard stop/slowdown zone -- gentler,
+    # appropriate as a last-resort layer under a controller (RPP) that is
+    # already supposed to have avoided this.
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: false
+      enabled: true
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "scan"
+      # Same band as scan.yaml's own min_height (0.30) rounded down slightly
+      # -- collision monitoring should not be MORE permissive than the scan
+      # that built it, but a touch of margin here is cheap.
+      min_height: 0.25
+      max_height: 1.50
+      enabled: true
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    # vx, vy, wz. vy is real (loco_bridge/the robot accept it) even though
+    # RPP above never commands it -- capped here in case a future controller
+    # swap starts using it.
+    max_velocity: [0.3, 0.2, 0.5]
+    min_velocity: [-0.3, -0.2, -0.5]
+    max_accel: [0.5, 0.5, 1.5]
+    max_decel: [-0.5, -0.5, -1.5]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

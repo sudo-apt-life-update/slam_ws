@@ -1,0 +1,259 @@
+# RTAB-Map: RGB-D graph SLAM for the G1.
+#
+# WHY THIS EXISTS INSTEAD OF slam_toolbox.yaml
+#
+# slam_toolbox closes loops by GEOMETRIC scan matching. That needs a wide,
+# dense, low-noise scan, and this robot has none of those:
+#
+#              slam_toolbox expects      D435i on the G1
+#   FOV        ~270 deg                  70 deg
+#   near limit ~0.1 m                    1.5 m (bracket pitched 21.3 deg down)
+#   jitter     ~10 mm                    ~350 mm in open space
+#   rate       40 Hz                     15 Hz (USB limit)
+#
+# In a 15x15 m hall a 70 deg wedge of noisy, distant returns gives the solver
+# almost nothing to correlate. Four walks produced four open horseshoes; the
+# loop-closure search never fired even once. Coverage improved on every walk
+# (unknown 82.1% -> 75.3% -> 67.1%) which proves the walking was fine -- the
+# matcher was the problem.
+#
+# RTAB-Map closes loops on VISUAL appearance instead: a bag-of-words index over
+# RGB features recognises a place by what it looks like, not by the shape of a
+# range wedge. Geometry is then only used to compute the transform once the
+# place is already recognised, where a 70 deg FOV is perfectly adequate.
+#
+# It also produces both layers the project actually asked for -- a 2D grid for
+# Nav2/AMCL, and a full RGB-D database that exports to a 3D cloud -- from one
+# session.
+
+rtabmap:
+  ros__parameters:
+
+    # ---------------------------------------------------------------- frames
+
+    # The robot frame RTAB-Map builds everything relative to. base_stabilized,
+    # not base_footprint, for the same reason scan.yaml uses it: the G1 stands
+    # with a ~7.5 deg lean and pitches every step, and base_footprint carries
+    # that attitude. The occupancy grid is built by height-thresholding points
+    # in THIS frame, so if it tilts, the ground/obstacle split tilts with it and
+    # the floor starts registering as an obstacle on every stride.
+    #
+    # See g1_locomotion/base_stabilizer.py. TF resolves
+    # base_stabilized -> camera_color_optical_frame through their shared parent
+    # odom, so no extra static transform is needed.
+    frame_id: base_stabilized
+
+    # Take odometry from TF (odom -> base_stabilized) rather than a topic. One
+    # source of truth, and it is already the frame the grid is built in.
+    odom_frame_id: odom
+    map_frame_id: map
+
+    # RTAB-Map owns map -> odom. Nothing else may publish it while this runs.
+    publish_tf: true
+
+    # The bridge stamps at capture and the transform has to be looked up at that
+    # stamp. 0.2 s covers bridge latency (~22 ms) plus TF jitter with margin;
+    # too small and frames are silently dropped, which looks like a dead camera.
+    wait_for_transform: 0.2
+
+    # -------------------------------------------------------------- subscribe
+
+    subscribe_depth: true
+    subscribe_rgbd: false
+
+    # NOT subscribing to /scan. That pipeline is exactly what failed. Depth
+    # images carry far more information than the 141-ray wedge derived from
+    # them, and Grid/Sensor below builds the grid straight from depth.
+    subscribe_scan: false
+    subscribe_scan_cloud: false
+    subscribe_odom_info: false
+
+    # EXACT sync. g1_camera_bridge applies one shared timestamp to colour,
+    # depth and both CameraInfos per frame, so the stamps are identical by
+    # construction. approx_sync would work too but would hide a regression in
+    # that guarantee -- if the stamps ever drift apart, this should fail loudly.
+    approx_sync: false
+
+    # 1 = RELIABLE, matching the camera bridge. Best-effort dropped ~8% of the
+    # 1.84 MB depth frames to DDS fragmentation.
+    qos_image: 1
+    qos_camera_info: 1
+
+    # ------------------------------------------------------------- behaviour
+
+    # Mapping, not localisation. Flipped to true once the map is good.
+    Mem/IncrementalMemory: "true"
+
+    # Keep every node in Working Memory. The default transfers old nodes to
+    # Long-Term Memory under time pressure, and a node in LTM cannot be matched
+    # against -- which would defeat the entire point of switching to visual loop
+    # closure. This hall is small enough that memory is not a concern.
+    Rtabmap/TimeThr: "0"
+    Mem/NotLinkedNodesKept: "false"
+
+    # 2 Hz. The default 1 Hz is tuned for a wheeled robot at walking pace; the
+    # G1 is slower but turns in place, and a turn moves the whole scene out of a
+    # 70 deg FOV quickly. A denser graph means more candidate places to
+    # recognise later, which is the thing we are short of.
+    Rtabmap/DetectionRate: "2"
+
+    # Node creation is still gated by actual motion, so standing still does not
+    # fill the graph with duplicates.
+    RGBD/LinearUpdate: "0.1"
+    RGBD/AngularUpdate: "0.1"
+
+    # Short-term memory holds recent nodes back from loop-closure candidacy so
+    # the robot cannot "recognise" where it was two seconds ago. 30 nodes at
+    # 2 Hz is ~15 s of travel -- long enough to be a genuine revisit.
+    Mem/STMSize: "30"
+
+    # ---------------------------------------------------------- loop closure
+
+    # THE PART THAT MATTERS. This is what slam_toolbox could not do.
+
+    # Appearance-based detection threshold. Lower = more closures accepted.
+    # 0.11 is the default and is already fairly permissive; a false closure is
+    # far more destructive than a missed one, because it folds the map onto
+    # itself irrecoverably. Do not lower this before checking that real
+    # closures are being proposed and rejected.
+    Rtabmap/LoopThr: "0.11"
+
+    # Also detect closures by PROXIMITY -- nodes near in space in the optimised
+    # graph, even if the images never matched. This is the second chance when
+    # the robot returns to a spot facing a different direction, which with a
+    # 70 deg FOV happens constantly.
+    RGBD/ProximityBySpace: "true"
+    RGBD/ProximityMaxGraphDepth: "0"
+    RGBD/LocalRadius: "5"
+
+    # Reject a closure whose optimisation error is more than 3x the link
+    # standard deviation. This is the guard against the failure mode above.
+    #
+    # DELIBERATELY LEFT AT 3.0. On walk 5 this gate rejected five constraints
+    # and every one of them was the AprilTag landmark (node -10); all 79 visual
+    # rejections came from the separate Vis/MinInliers gate. So raising this
+    # would have been a way to rescue the landmark -- and the wrong way, because
+    # the real fault was an over-tight covariance in apriltag_localizer.py, not
+    # a gate that was too strict. That is fixed at source now.
+    #
+    # Reprocessing walk 5's database DOES need an override, because the bad
+    # covariance is baked into the recorded landmarks and rtabmap-reprocess
+    # replays them as stored:
+    #
+    #   rtabmap-reprocess --RGBD/OptimizeMaxError 5.0 in.db out.db
+    #
+    # That is a property of that one database, not of this configuration.
+    RGBD/OptimizeMaxError: "3.0"
+
+    # Do NOT cap loop closures by distance from the current map estimate. The
+    # whole problem is that odometry has drifted far from truth by the time the
+    # robot returns; a distance gate would reject precisely the closures that
+    # are worth the most. (slam_toolbox's equivalent gate,
+    # loop_search_maximum_distance: 3.0, is why it never even searched.)
+    RGBD/MaxLoopClosureDistance: "0.0"
+
+    # Refine each odometry link visually as it is added. Leg odometry is the
+    # drift source here, and this corrects it link by link inside the graph
+    # without any of the TF surgery that swapping in visual odometry needs.
+    RGBD/NeighborLinkRefining: "true"
+
+    # Optimise from the OLDEST node so the map origin stays put. With true, the
+    # whole map shifts under the robot every time a closure fires, which is
+    # unreadable in RViz during a walk.
+    RGBD/OptimizeFromGraphEnd: "false"
+
+    # ------------------------------------------------------------- features
+
+    # GFTT/ORB (8) is the default and the right choice here: cheap, and GFTT
+    # spreads keypoints evenly rather than clumping them on one high-contrast
+    # object, which matters when only 70 deg of the room is visible at a time.
+    Kp/DetectorStrategy: "8"
+
+    # Vocabulary size per node. 500 is the default; 750 buys a bit more
+    # distinctiveness on plain industrial walls at a modest CPU cost.
+    Kp/MaxFeatures: "750"
+    Vis/MaxFeatures: "1000"
+
+    # Correspondences needed to accept a transform. 20 is the default. Lowering
+    # it manufactures loop closures out of coincidence, which is worse than
+    # none. Raise it if false closures appear.
+    Vis/MinInliers: "20"
+
+    # 3D->2D PnP. Correct for RGB-D where depth is reliable on one side of the
+    # match but may be missing on the other.
+    Vis/EstimationType: "1"
+
+    # ------------------------------------------------------------ 2D / 3DoF
+
+    # The robot walks on a flat floor and the deliverable is a 2D grid, so
+    # constrain the whole graph to x, y, yaw. This eliminates z, roll and pitch
+    # drift outright -- three of the six degrees of freedom simply cannot
+    # accumulate error. On a humanoid that bobs and leans every step, this is
+    # one of the highest-value settings in the file.
+    #
+    # There is no companion "Optimizer/Slam2D" in 0.22.1 -- that name exists in
+    # older docs and is silently DROPPED here, with no warning in the log.
+    # Reg/Force3DoF alone does the job: it zeroes z, roll and pitch on every
+    # link before the optimiser ever sees them.
+    Reg/Force3DoF: "true"
+
+    # Visual registration. VisIcp (2) would refine with depth geometry, but ICP
+    # needs generous overlap between views and a 70 deg FOV rarely provides it.
+    # Try 2 only after Vis alone is demonstrably closing loops.
+    Reg/Strategy: "0"
+
+    # GTSAM. Vertigo robust optimisation (Optimizer/Robust) is deliberately off
+    # because it is mutually exclusive with RGBD/OptimizeMaxError above, and the
+    # explicit error gate is easier to reason about when diagnosing a bad map.
+    Optimizer/Strategy: "2"
+    Optimizer/Robust: "false"
+
+    # ------------------------------------------------------- occupancy grid
+
+    # 2D grid, matching the resolution of every map saved so far.
+    Grid/3D: "false"
+    Grid/CellSize: "0.05"
+
+    # Build the grid from the depth image (1), not from a laser scan (0).
+    Grid/Sensor: "1"
+
+    # RAY TRACING. Mark every cell between the camera and each hit as FREE,
+    # instead of only marking the hit. This is the direct fix for the thing that
+    # made the last four maps unusable for AMCL: walk 4 still had 67.1% unknown,
+    # and AMCL scored 62% of its scan endpoints against unknown space, which it
+    # treats as no information at all. Ray tracing turns the volume the camera
+    # has actually looked through into known free space.
+    Grid/RayTracing: "true"
+
+    # Ground/obstacle split by plain height threshold, not normals clustering.
+    # Because frame_id is base_stabilized, z IS true height above the floor, so
+    # a threshold is exact and deterministic. Normals segmentation is for robots
+    # without a level frame and would give the floor a vote it has not earned.
+    Grid/NormalsSegmentation: "false"
+    Grid/MaxGroundHeight: "0.15"
+    Grid/MaxObstacleHeight: "1.50"
+
+    # Depth degrades quadratically with range, so this sets how much far-field
+    # noise is allowed to become "obstacle".
+    #
+    # MEASURED 2026-08-22, walk 5. At 5.0 the map came out 19.4% occupied, with
+    # black fans of spurious obstacle spraying outward from the walk path --
+    # far too thick for AMCL to match against. Two effects compound out there:
+    # the ~350 mm depth jitter measured in open space, and the fact that a
+    # small camera-pitch error lifts distant FLOOR points above the 0.15 m
+    # ground threshold, so the floor itself starts registering as obstacle.
+    # Both scale with range; 3.5 m cuts the worst of each.
+    #
+    # This is independent of what the camera can SEE -- the cloud still carries
+    # 6 m of depth, and loop closure still uses features at any range. This
+    # governs the occupancy grid only.
+    Grid/RangeMax: "3.5"
+
+    # 4 = 212x120 from the 848x480 depth image. Ample for a 5 cm grid, and it
+    # keeps grid assembly well clear of the 2 Hz map-update budget.
+    Grid/DepthDecimation: "4"
+
+    # Clear obstacles under the robot's own footprint. Depth returns from the
+    # G1's own arms and torso would otherwise walk a trail of phantom obstacles
+    # down the middle of every corridor it traverses.
+    GridGlobal/FootprintRadius: "0.30"

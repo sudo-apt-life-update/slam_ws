@@ -1,0 +1,34 @@
+# Colcon build artifacts
+build/
+install/
+log/
+
+# VS Code
+.vscode/
+
+# CLion
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+
+# Temporary files
+*.swp
+*.swo
+
+
+*~
+
+# ROS logs
+*.log
+
+# Third-party repositories (recreated with vcs)
+src/third_party/
+
+# Claude Code local session state
+.claude/

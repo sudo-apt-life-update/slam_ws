@@ -1,0 +1,149 @@
+# RViz layout for the four manual sensor checks that check_sensors cannot do.
+#
+#   1. Optical frame  - point the camera at a flat floor. The cloud must lie
+#                       FLAT and BELOW the robot. Rotated 90 deg => the optical
+#                       rotation is wrong.
+#   2. Extrinsic      - put a box at a measured distance/height. Its cloud
+#                       position must match the tape measure to a few cm.
+#   3. Gravity        - standing still, the floor plane must be LEVEL.
+#   4. IMU axes       - tilt forward => pitch up; roll left => roll up.
+#
+# Fixed frame is base_link (NOT pelvis, as in g1_29dof.rviz) because checks
+# 1-3 are all about where things land relative to the navigation frame.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /DepthCloud1
+      Splitter Ratio: 0.5
+    Tree Height: 700
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Alpha: 0.5
+      Cell Size: 0.5
+      Plane: XY
+      Plane Cell Count: 20
+      Color: 160; 160; 164
+      Reference Frame: base_footprint
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Alpha: 0.8
+      Visual Enabled: true
+      Collision Enabled: false
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Marker Scale: 0.25
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Update Interval: 0
+      # Only the frames that matter for these checks. Enable others as needed --
+      # the full 47-frame tree is unreadable.
+      Frames:
+        All Enabled: false
+        base_footprint:
+          Value: true
+        base_link:
+          Value: true
+        pelvis:
+          Value: true
+        imu_in_pelvis:
+          Value: true
+        torso_link:
+          Value: true
+        d435_link:
+          Value: true
+        camera_link:
+          Value: true
+        camera_color_optical_frame:
+          Value: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DepthCloud
+      Enabled: true
+      Topic:
+        Value: /camera/cloud
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        # point_cloud_xyzrgb publishes reliable; a best-effort subscription
+        # here would silently receive nothing.
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 3
+      Alpha: 1
+      # RGB8 shows the real colours, which makes check 2 (is that box where the
+      # tape measure says?) much easier to judge than a height gradient.
+      Color Transformer: RGB8
+      Decay Time: 0
+      Position Transformer: XYZ
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: ColourImage
+      Enabled: true
+      Topic:
+        Value: /camera/color/image_raw
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Max Value: 1
+      Min Value: 0
+      Normalize Range: true
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      # Looking at the robot from front-left and slightly above, so the floor
+      # plane in front of the feet -- where the tilted camera actually looks --
+      # is visible and its flatness is easy to judge.
+      Distance: 3.5
+      Focal Point:
+        X: 0.5
+        Y: 0
+        Z: 0.3
+      Pitch: 0.35
+      Yaw: 2.5
+      Target Frame: base_link
+      Near Clip Distance: 0.01
+    Saved: ~
+Window Geometry:
+  Height: 1000
+  Width: 1600
+  Displays:
+    collapsed: false
+  ColourImage:
+    collapsed: false

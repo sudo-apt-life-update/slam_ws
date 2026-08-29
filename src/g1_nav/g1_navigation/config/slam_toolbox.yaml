@@ -1,0 +1,120 @@
+# slam_toolbox: build a map by walking the robot.
+#
+# WHY BUILD A MAP AT ALL, GIVEN WE HAVE ONE
+#
+# The survey map (map.pgm) is a point-cloud slice from an E57 scan: obstacles
+# taken from 0.12-2.20 m, 38.8% unknown, visibly speckled, captured by a
+# different instrument on a different day. Our scan sees 0.3-1.5 m through a
+# 70 degree wedge, reaches about 80% of that band at 4 m, and carries ~350 mm
+# of per-ray jitter. The two were never obliged to agree, and in practice they
+# do not -- scans were observed landing on walls AND on floor, and AMCL never
+# converged.
+#
+# A map built by this robot's own sensor is self-consistent by construction:
+# same height, same FOV, same noise, same filtering. That removes the entire
+# mismatch class rather than tuning around it.
+#
+# AMCL cannot do this. It only ever MATCHES against a map; it never edits one.
+# Updating the map means SLAM, which is what this is.
+#
+# WHAT THIS TRADES AWAY
+#
+# The survey map is metrically true -- it came from a surveying instrument. A
+# SLAM map is only as straight as the odometry and loop closures that built it.
+# Ours should be good (the robot's own leg+IMU estimator, tape-measure
+# validated), but expect some drift over a large loop. Walk closed loops and
+# return to where you started; that is what lets loop closure straighten it.
+
+slam_toolbox:
+  ros__parameters:
+    # --- frames -------------------------------------------------------------
+    # base_stabilized, NOT base_footprint. The scan is expressed in the level
+    # frame; pointing SLAM at the tilted one would rotate every scan by the
+    # robot's stance lean, which on this robot is 7.5 deg standing.
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_stabilized
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping
+
+    # --- solver -------------------------------------------------------------
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02        # 50 Hz map -> odom
+    map_update_interval: 1.0              # republish the grid every second
+    # Must match the map we may later compare against, and the costmaps.
+    resolution: 0.05
+    # The scan is built with range_max 6.0 (scan.yaml). Claiming more here
+    # would have slam_toolbox treat 6 m returns as mid-range hits rather than
+    # the edge of what we can see.
+    max_laser_range: 6.0
+    minimum_time_interval: 0.2
+    transform_timeout: 0.3
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+
+    # --- when to add a scan to the graph ------------------------------------
+    # Tighter than stock (0.5 m / 0.5 rad). A 70 degree wedge sees far less per
+    # scan than the 270 degree LiDAR these defaults assume, so nodes need to be
+    # closer together for consecutive scans to share enough overlap to match.
+    # The cost is a bigger graph, which this map size can afford.
+    minimum_travel_distance: 0.2
+    minimum_travel_heading: 0.2
+
+    # --- scan matching ------------------------------------------------------
+    use_scan_matching: true
+    use_scan_barycenter: true
+    # How many past scans to match against as one "running scan". More scans
+    # compensate for each one being narrow.
+    scan_buffer_size: 30
+    scan_buffer_maximum_scan_distance: 8.0
+    # Raised from 0.35. With a narrow, jittery scan the raw match score is
+    # lower even when correct; too low a bar here and good links get rejected,
+    # leaving the graph to rely on odometry alone.
+    link_match_minimum_response_fine: 0.15
+    link_scan_maximum_distance: 1.5
+
+    # --- loop closure -------------------------------------------------------
+    # This is what makes a walked map straight. Walk CLOSED LOOPS and return to
+    # where you started, or there is nothing to close.
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # --- correlation search windows -----------------------------------------
+    # The window the matcher searches when placing a scan. Widened slightly
+    # because a narrow FOV gives a flatter response surface, so the true
+    # optimum can sit further from the odometry prior.
+    correlation_search_space_dimension: 0.6
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # --- how much to trust odometry vs the scan -----------------------------
+    # These penalise deviation from the odometry prior. Kept firm, because the
+    # odometry here is the robot's own leg+IMU estimate and is more trustworthy
+    # than a 70 degree scan match. Lower them only if the map shows the robot
+    # being dragged off a true path by bad matches.
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+
+    fine_search_angle_offset: 0.00349     # 0.2 deg
+    coarse_search_angle_offset: 0.349     # 20 deg
+    coarse_angle_resolution: 0.0349       # 2 deg
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true

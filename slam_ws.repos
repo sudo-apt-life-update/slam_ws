@@ -1,0 +1,13 @@
+repositories:
+  third_party/navigation2:
+    type: git
+    url: https://github.com/ros-navigation/navigation2.git
+    version: 2b3d62218a62a746d9b6ff676974b02c10a352d6
+  third_party/realsense-ros:
+    type: git
+    url: https://github.com/IntelRealSense/realsense-ros.git
+    version: 60c850958d651130fc2cc3d10efb37ff5be93da5
+  third_party/rtabmap_ros:
+    type: git
+    url: https://github.com/introlab/rtabmap_ros.git
+    version: e73e7690cbb56af23a894bf6c4ee266e55772fc2
